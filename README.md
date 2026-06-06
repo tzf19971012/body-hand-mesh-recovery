@@ -21,13 +21,9 @@ A self-contained pipeline that combines **4D-Humans (HMR2)** for body pose, **Ha
 
 The following comparisons show the improvement when fusing **HMR2** body pose with **HaMeR** hand pose into a unified **SMPL-X** mesh. The left column is the baseline 4D-Humans output; the right column is our optimized body+hand reconstruction.
 
-| Barbell (Hands Gripping) | Kettlebell (Hands Holding) |
+| Barbell (Hands Gripping) | Hoodie Strings (Hands Near Face) |
 |:---:|:---:|
-| ![barbell](assets/pexels-anete-lusina-4793258_person0_compare.png) | ![kettlebell](assets/pushup_person0_compare.png) |
-
-| Hoodie Strings (Hands Near Face) | Rock Climbing (Hands on Wall) |
-|:---:|:---:|
-| ![hoodie](assets/reaching_person0_compare.png) | ![climbing](assets/climbing_person0_compare.png) |
+| ![barbell](assets/pexels-anete-lusina-4793258_person0_compare.png) | ![hoodie](assets/reaching_person0_compare.png) |
 
 **Observation**: The baseline produces blob-like hands with no finger articulation. After injecting HaMeR hand predictions, fingers are clearly separated and naturally posed—critical for embodied AI datasets and motion capture applications where hand-grasp semantics matter.
 
