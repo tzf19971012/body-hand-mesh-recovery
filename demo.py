@@ -34,6 +34,7 @@ from hmr2.models import load_hmr2, DEFAULT_CHECKPOINT as BODY_CKPT
 from hmr2.utils import recursive_to
 from hmr2.datasets.vitdet_dataset import ViTDetDataset as BodyDataset
 from hmr2.utils.renderer import cam_crop_to_full
+from hmr2.datasets.vitdet_dataset import DEFAULT_MEAN, DEFAULT_STD
 
 import hamer.configs as _hamer_cfg
 _hamer_cfg.CACHE_DIR_HAMER = os.environ.get('HAMER_CACHE_DIR', './_DATA')
@@ -155,6 +156,8 @@ def infer_body(body_model, body_cfg, img_cv2, boxes, device):
                 'box_center': batch['box_center'][i],
                 'box_size': batch['box_size'][i],
                 'img_size': batch['img_size'][i],
+                'img': batch['img'][i].cpu(),
+                'personid': int(batch['personid'][i].item()),
             })
     return results
 
@@ -295,12 +298,14 @@ def combine_smplx(body_results, hand_results, smplx_model, body_cfg):
             )
             body_pose[pid, 20] = R_chain.mT @ R_target
         else:
-            Rz180 = torch.tensor([[-1., 0., 0.],
-                                  [0., -1., 0.],
-                                  [0., 0., 1.]],
-                                 device=device, dtype=torch.float32)
-            left_hand_pose[pid] = hand_pose[0] @ Rz180
-            R_target = R_mano @ Rz180
+            # X-flip conjugation: M @ R @ M where M = diag(-1, 1, 1).
+            # This is the correct mirror transform between right-hand (MANO)
+            # and left-hand (SMPL-X) local coordinate systems.
+            # It keeps x-axis rotation (finger bending) unchanged,
+            # and flips y/z-axis rotation signs.
+            M = torch.diag(torch.tensor([-1., 1., 1.], device=device, dtype=torch.float32))
+            left_hand_pose[pid] = M @ hand_pose[0] @ M
+            R_target = M @ R_mano @ M
             R_chain = wrist_chain_rotation(
                 global_orient[pid], body_pose[pid], LEFT_WRIST_CHAIN
             )
@@ -399,20 +404,56 @@ def main():
         save_obj(verts, faces, out_path)
         print(f"  Saved: {out_path}")
 
+    # Save individual MANO hand meshes for comparison
+    mano_faces = hand_model.mano.faces
+    for h in hand_results:
+        side = 'right' if h['right'] == 1 else 'left'
+        verts = h['pred_vertices'] + h['pred_cam_t']
+        out_path = os.path.join(out_dir, f'person_{h["person_id"]}_{side}_mano.obj')
+        save_obj(verts, mano_faces, out_path)
+        print(f"  Saved MANO: {out_path}")
+
     print("[5/5] Rendering...")
     from hmr2.utils.renderer import Renderer
     renderer = Renderer(body_cfg, faces=faces)
     for i in range(len(body_results)):
-        rendered = renderer(
+        b = body_results[i]
+
+        # --- 1) Full-frame render (overall view) ---
+        rendered_full = renderer(
             vertices=vertices[i].detach().cpu().numpy(),
             camera_translation=cam_t_list[i].detach().cpu().numpy(),
             image=None,
             full_frame=True,
             imgname=str(args.img),
         )
+        # Upscale full-frame so the figure is larger
+        h, w = rendered_full.shape[:2]
+        rendered_full = cv2.resize(rendered_full, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
         rend_path = os.path.join(out_dir, f'person_{i}_rendered.png')
-        cv2.imwrite(rend_path, (rendered[:, :, ::-1] * 255).astype(np.uint8))
-        print(f"  Rendered: {rend_path}")
+        cv2.imwrite(rend_path, (rendered_full[:, :, ::-1] * 255).astype(np.uint8))
+        print(f"  Rendered (full): {rend_path}")
+
+        # --- 2) Crop-level zoomed render (detail view, same as 4D-Humans) ---
+        white_img = (torch.ones_like(b['img']) - DEFAULT_MEAN[:, None, None] / 255)                     / (DEFAULT_STD[:, None, None] / 255)
+        input_patch = b['img'] * (DEFAULT_STD[:, None, None] / 255)                       + (DEFAULT_MEAN[:, None, None] / 255)
+        input_patch = input_patch.permute(1, 2, 0).numpy()
+
+        regression_img = renderer(
+            vertices[i].detach().cpu().numpy(),
+            b['pred_cam_t'][0].detach().cpu().numpy(),
+            b['img'],
+            mesh_base_color=(1.0, 1.0, 0.9),
+            scene_bg_color=(1, 1, 1),
+        )
+
+        detail_img = np.concatenate([input_patch, regression_img], axis=1)
+        # Upscale detail view so hands are clearly visible
+        detail_h, detail_w = detail_img.shape[:2]
+        detail_img = cv2.resize(detail_img, (detail_w * 2, detail_h * 2), interpolation=cv2.INTER_LINEAR)
+        detail_path = os.path.join(out_dir, f'person_{i}_detail.png')
+        cv2.imwrite(detail_path, (detail_img[:, :, ::-1] * 255).astype(np.uint8))
+        print(f"  Rendered (detail): {detail_path}")
 
     print("Done.")
 
